@@ -10,6 +10,7 @@ import sqlite3
 from threading import Thread
 
 import smtplib
+import environs
 from environs import Env
 from email.mime.text import MIMEText
 import email.utils
@@ -63,23 +64,28 @@ class MyHandler(http.server.BaseHTTPRequestHandler):
             from_email = env("EMAIL")
             password_from_email = env("PASSWORD")
             smtp = env("SMTP")
-        except Exception as e:
-            print("error .env: ", e)
+        except environs.EnvError as e:
+            print("Error in .env: ", e)
             return
 
-        msg = MIMEText(str("url: " + url + "\nmd5: " + md5))
-        msg['To'] = email.utils.formataddr(('Recipient Name', post_email))
-        msg['From'] = email.utils.formataddr(('Md5 light', from_email))
-        msg['Subject'] = 'Md5'
-        server = smtplib.SMTP_SSL(smtp)
-        server.login(from_email, password_from_email)
-
         try:
-            server.sendmail(from_email, [post_email], msg.as_string())
-        except Exception as e:
-            print("error email or password in .env or POST email: ", e)
-        finally:
-            server.quit()
+            msg = MIMEText(str("url: " + url + "\nmd5: " + md5))
+            msg['To'] = email.utils.formataddr(('Recipient Name', post_email))
+            msg['From'] = email.utils.formataddr(('Md5 light', from_email))
+            msg['Subject'] = 'Md5'
+            server = smtplib.SMTP_SSL(smtp)
+            try:
+                server.login(from_email, password_from_email)
+                server.sendmail(from_email, [post_email], msg.as_string())
+            except smtplib.SMTPAuthenticationError as e:
+                print("Incorrect email or password in .env: ", e)
+            except smtplib.SMTPRecipientsRefused as e:
+                print("Incorrect email in POST: ", e)
+            finally:
+                server.quit()
+        except UnicodeEncodeError as e:
+            print("Impossible characters in email or password in .env or POST: ", e)
+
 
     def md5_sum(self, id, url, post_email):
         md5 = None
@@ -90,23 +96,23 @@ class MyHandler(http.server.BaseHTTPRequestHandler):
                 d.update(line)
             md5 = str(d.hexdigest())
         except Exception as e:
-            print(e)
+            print("Error with file url:", e)
 
         conn = sqlite3.connect("result.db")
         cursor = conn.cursor()
-        if md5 is not None:
-            try:
+        try:
+            if md5 is not None:
                 cursor.execute('UPDATE results SET status=?, md5=? WHERE id=?', ('done', md5, id))
-                self.send_email(url, md5, post_email)
-            except sqlite3.IntegrityError as e:
-                print('sqlite error: ', e)
-        else:
-            try:
+                conn.commit()
+            else:
                 cursor.execute('UPDATE results SET status=? WHERE id=?', ('fail', id))
-            except sqlite3.IntegrityError as e:
-                print('sqlite error: ', e)
-        conn.commit()
-        conn.close()
+                conn.commit()
+        except sqlite3.IntegrityError as e:
+            print('SQLite error: ', e)
+        finally:
+            conn.close()
+        if md5 is not None:
+            self.send_email(url, md5, post_email)
 
     def do_POST(self):
         if self.path == "/submit":
@@ -116,6 +122,9 @@ class MyHandler(http.server.BaseHTTPRequestHandler):
 
             post_url = ""
             post_email = ""
+            if self.headers.get('Content-Length') is None:
+                self.send_response(400)
+                return
             content_len = int(self.headers.get('Content-Length'))
             post_body = self.rfile.read(content_len)
             post_body = post_body.decode("utf-8")
@@ -132,9 +141,9 @@ class MyHandler(http.server.BaseHTTPRequestHandler):
             cursor = conn.cursor()
             try:
                 cursor.execute('INSERT INTO results (id, email, status, md5, url) VALUES (?,?,?,?,?)',
-                          (data_elem['id'], post_email, 'running', "", post_url))
+                               (data_elem['id'], post_email, 'running', "", post_url))
             except sqlite3.IntegrityError as e:
-                print('sqlite error: ', e)
+                print('SQLite error: ', e)
             conn.commit()
             conn.close()
 

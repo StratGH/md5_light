@@ -13,6 +13,7 @@ if __name__ == "__main__":
     except environs.EnvError:
         PORT = 8000
 
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", PORT), MyHandler) as httpd:
         print("serving at port", PORT)
         try:
